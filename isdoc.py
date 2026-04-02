@@ -2,8 +2,9 @@
 ISDOC 6.0.2 intermediate layer.
 
 Pipeline:
-  OCR text → Claude → ISDOC XML → ExtractedDocument
+  OCR text → LLM (Claude nebo OpenAI) → ISDOC XML → ExtractedDocument
 
+Provider se volí přes env proměnnou LLM_PROVIDER (claude / openai).
 The ISDOC XML is persisted to output/{item_id}.xml so it can be
 reused or exported independently of this application.
 
@@ -14,23 +15,32 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
-from anthropic import Anthropic
-
-from config import ANTHROPIC_API_KEY
+from config import ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENAI_MODEL, LLM_PROVIDER
 from models import DocumentType, ExtractedDocument, LineItem, PaymentMethod
 
 _OUTPUT_DIR = Path("output")
 _NS = "http://isdoc.cz/namespace/2013"
 _NSP = f"{{{_NS}}}"   # Clark-notation prefix for ElementTree lookups
 
-_client: Optional[Anthropic] = None
+# Lazy clients
+_anthropic_client = None
+_openai_client = None
 
 
-def _get_client() -> Anthropic:
-    global _client
-    if _client is None:
-        _client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _client
+def _get_anthropic():
+    global _anthropic_client
+    if _anthropic_client is None:
+        from anthropic import Anthropic
+        _anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
+def _get_openai():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
 
 
 # ---------------------------------------------------------------------------
@@ -143,34 +153,63 @@ _ISDOC_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 # ---------------------------------------------------------------------------
-# Step 1: OCR text → ISDOC XML  (via Claude)
+# Step 1: OCR text → ISDOC XML  (via LLM)
 # ---------------------------------------------------------------------------
 
-def extract_to_isdoc(ocr_text: str) -> str:
-    """
-    Call Claude with OCR text and return ISDOC 6.0.2 XML string.
-    Raises on API failure; may return structurally incomplete XML on partial data.
-    """
-    client = _get_client()
-    user_msg = (
-        "Zpracuj tento OCR text a vyplň ISDOC šablonu:\n\n"
-        f"ŠABLONA:\n{_ISDOC_TEMPLATE}\n\n"
-        f"OCR TEXT:\n{ocr_text}"
-    )
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    raw = response.content[0].text.strip()
-    # Strip accidental markdown fences
+def _strip_markdown(raw: str) -> str:
+    """Odstraní případné markdown fences z odpovědi LLM."""
     if raw.startswith("```"):
         parts = raw.split("```")
         raw = parts[1]
         if raw.lower().startswith("xml"):
             raw = raw[3:]
     return raw.strip()
+
+
+def _extract_to_isdoc_claude(ocr_text: str) -> str:
+    """Volá Claude Sonnet a vrátí ISDOC 6.0.2 XML string."""
+    user_msg = (
+        "Zpracuj tento OCR text a vyplň ISDOC šablonu:\n\n"
+        f"ŠABLONA:\n{_ISDOC_TEMPLATE}\n\n"
+        f"OCR TEXT:\n{ocr_text}"
+    )
+    response = _get_anthropic().messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        system=_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    return _strip_markdown(response.content[0].text.strip())
+
+
+def _extract_to_isdoc_openai(ocr_text: str) -> str:
+    """Volá OpenAI a vrátí ISDOC 6.0.2 XML string."""
+    user_msg = (
+        "Zpracuj tento OCR text a vyplň ISDOC šablonu:\n\n"
+        f"ŠABLONA:\n{_ISDOC_TEMPLATE}\n\n"
+        f"OCR TEXT:\n{ocr_text}"
+    )
+    response = _get_openai().chat.completions.create(
+        model=OPENAI_MODEL,
+        max_tokens=4096,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": user_msg},
+        ],
+    )
+    return _strip_markdown(response.choices[0].message.content.strip())
+
+
+def extract_to_isdoc(ocr_text: str, provider: str | None = None) -> str:
+    """
+    Převede OCR text na ISDOC 6.0.2 XML pomocí zvoleného LLM.
+    provider: "claude" | "openai" | None  → použije LLM_PROVIDER z env
+    Raises on API failure.
+    """
+    p = (provider or LLM_PROVIDER).lower()
+    if p == "openai":
+        return _extract_to_isdoc_openai(ocr_text)
+    return _extract_to_isdoc_claude(ocr_text)
 
 
 # ---------------------------------------------------------------------------
@@ -327,15 +366,16 @@ def load_isdoc(name: str) -> Optional[str]:
 # Combined entry point
 # ---------------------------------------------------------------------------
 
-def extract_document(ocr_text: str, save_as: Optional[str] = None) -> ExtractedDocument:
+def extract_document(ocr_text: str, save_as: Optional[str] = None,
+                     provider: str | None = None) -> ExtractedDocument:
     """
     Full ISDOC pipeline:
-      1. Claude converts OCR text → ISDOC XML
-      2. XML is saved to output/ (if save_as given)
-      3. XML is parsed → ExtractedDocument
-    Raises ValueError if Claude returns unparseable XML.
+      1. LLM (Claude nebo OpenAI) převede OCR text → ISDOC XML
+      2. XML se uloží do output/ (pokud je zadáno save_as)
+      3. XML se naparsuje → ExtractedDocument
+    Raises ValueError if LLM returns unparseable XML.
     """
-    xml = extract_to_isdoc(ocr_text)
+    xml = extract_to_isdoc(ocr_text, provider=provider)
     if save_as:
         save_isdoc(save_as, xml)
     return isdoc_to_extracted(xml)
