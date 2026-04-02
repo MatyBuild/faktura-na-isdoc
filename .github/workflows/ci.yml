@@ -24,23 +24,17 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Nainstalovat závislosti (bez OCR)
+      - name: Nainstalovat závislosti
         run: |
           pip install --upgrade pip
-          pip install pydantic anthropic python-dotenv pymupdf pytest pytest-cov
+          pip install pydantic "anthropic>=0.40.0" python-dotenv pytest pytest-cov
 
       - name: Spustit testy
         env:
           ANTHROPIC_API_KEY: sk-ant-test-dummy
-        run: |
-          pytest tests/ -v --tb=short \
-            --cov=. \
-            --cov-omit="tests/*,conftest.py" \
-            --cov-report=term-missing
+        run: pytest tests/ -v --tb=short --cov --cov-report=term-missing
 
       - name: Zkontrolovat pokrytí (min. 80 %)
         env:
           ANTHROPIC_API_KEY: sk-ant-test-dummy
-        run: |
-          pytest tests/ --cov=. --cov-omit="tests/*,conftest.py" \
-            --cov-fail-under=80 -q
+        run: pytest tests/ --cov --cov-fail-under=80 -q
