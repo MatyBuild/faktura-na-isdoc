@@ -27,7 +27,7 @@ jobs:
       - name: Nainstalovat závislosti
         run: |
           pip install --upgrade pip
-          pip install pydantic "anthropic>=0.40.0" "openai>=1.50.0" python-dotenv pytest pytest-cov
+          pip install pydantic "anthropic>=0.40.0" "openai>=1.50.0" python-dotenv defusedxml pytest pytest-cov
 
       - name: Spustit testy
         env:

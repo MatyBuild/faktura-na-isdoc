@@ -12,6 +12,7 @@ Namespace: http://isdoc.cz/namespace/2013
 Spec:       https://mv.gov.cz/isdoc/clanek/aktualni-verze.aspx
 """
 import xml.etree.ElementTree as ET
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 from pathlib import Path
 from typing import Optional
 
@@ -237,7 +238,7 @@ def _float(el: Optional[ET.Element]) -> Optional[float]:
 def isdoc_to_extracted(xml: str) -> ExtractedDocument:
     """Parse ISDOC 6.0.2 XML string into ExtractedDocument."""
     try:
-        root = ET.fromstring(xml)
+        root = _safe_fromstring(xml)
     except ET.ParseError as exc:
         raise ValueError(f"Neplatné ISDOC XML: {exc}") from exc
 
