@@ -38,8 +38,8 @@ def _get_client() -> Anthropic:
 # ---------------------------------------------------------------------------
 _ISDOC_DOCTYPE: dict[str, DocumentType] = {
     "1": DocumentType.faktura,   # Daňový doklad
-    "2": DocumentType.faktura,   # Zálohový daňový doklad
-    "3": DocumentType.dobropis,  # Opravný daňový doklad
+    "2": DocumentType.zaloha,    # Zálohový daňový doklad
+    "3": DocumentType.dobropis,  # Opravný daňový doklad (dobropis/vrubopis)
     "4": DocumentType.faktura,   # Souhrnný daňový doklad
     "5": DocumentType.uctenka,   # Zjednodušený daňový doklad (paragon)
     "6": DocumentType.faktura,   # Doklad o zaplacení DPH při dovozu
@@ -62,7 +62,7 @@ Z OCR textu extrahuj data a vrať POUZE validní ISDOC 6.0.2 XML (bez markdown, 
 Začni přímo <?xml ... a nesmaž žádný povinný element.
 
 Pravidla:
-- DocumentType: 1=faktura, 3=dobropis/opravný daňový doklad, 5=paragon/účtenka
+- DocumentType: 1=faktura, 2=zálohová faktura (s DPH), 3=opravný daňový doklad (dobropis/vrubopis), 5=paragon/účtenka (max 10 000 Kč)
 - ID: číslo dokladu DODAVATELE (nikoli naše interní číslo)
 - IssueDate: datum vystavení (YYYY-MM-DD)
 - TaxPointDate: DUZP – datum zdanitelného plnění; pokud není, použij IssueDate
@@ -77,7 +77,8 @@ Pravidla:
 - PaymentMeans/Payment/VariableSymbol: variabilní symbol, pokud uveden
 - InvoiceLine: každá řádková položka; LineExtensionAmount = cena bez DPH v měně dokladu
 - ClassifiedTaxCategory/Percent: sazba DPH (0, 12 nebo 21); pro zahraniční samovyměření také 21
-- Dobropis (DocumentType=3): LineExtensionAmount musí být záporné číslo
+- Dobropis (DocumentType=3, snížení): LineExtensionAmount musí být záporné číslo
+- Vrubopis (DocumentType=3, zvýšení): LineExtensionAmount musí být kladné číslo
 - Pokud hodnota chybí a element není povinný, element vynech (nepiš prázdné tagy)
 """
 
@@ -278,9 +279,12 @@ def isdoc_to_extracted(xml: str) -> ExtractedDocument:
             unit_name=unit_name,
         ))
 
+    amount_total = _float(find("LegalMonetaryTotal/PayableAmount"))
+
     return ExtractedDocument(
         document_type=document_type,
         confidence=0.85,
+        amount_total=amount_total,
         supplier_name=supplier_name,
         registration_no=registration_no,
         vat_no=vat_no,

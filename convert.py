@@ -86,6 +86,17 @@ def convert_file(file_path: str, output_path: str | None = None,
     else:
         out = src.with_suffix(".xml")
 
+    # Paragon limit (§ 30 ZDPH): zjednodušený daňový doklad max 10 000 Kč
+    from models import DocumentType
+    if doc.document_type == DocumentType.uctenka:
+        total = doc.amount_total or sum(
+            abs(li.unit_price * li.quantity) * (1 + li.vat_rate / 100)
+            for li in doc.lines
+        )
+        if total > 10_000:
+            print(f"  POZOR: Paragon nad limit 10 000 Kč ({total:.0f} Kč). "
+                  f"Dle § 30 ZDPH musí obsahovat údaje o odběrateli jako řádný daňový doklad.")
+
     if as_json:
         out = out.with_suffix(".json")
         out.write_text(doc.model_dump_json(indent=2), encoding="utf-8")

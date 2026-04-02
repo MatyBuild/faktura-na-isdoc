@@ -5,8 +5,10 @@ from pydantic import BaseModel
 
 class DocumentType(str, Enum):
     faktura  = "faktura"
-    uctenka  = "uctenka"
-    dobropis = "dobropis"
+    zaloha   = "zaloha"    # Zálohová faktura / proforma (pozor: není vždy daňový doklad)
+    dobropis = "dobropis"  # Opravný daňový doklad – snížení (záporné částky)
+    vrubopis = "vrubopis"  # Opravný daňový doklad – zvýšení (kladné částky)
+    uctenka  = "uctenka"   # Zjednodušený daňový doklad (paragon, max 10 000 Kč)
     unknown  = "unknown"
 
 
@@ -45,4 +47,5 @@ class ExtractedDocument(BaseModel):
     currency: str = "CZK"
     exchange_rate: Optional[float] = None
     reverse_charge: bool = False
+    amount_total: Optional[float] = None   # z LegalMonetaryTotal/PayableAmount
     lines: List[LineItem] = []

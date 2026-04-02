@@ -240,10 +240,15 @@ def _extract_payment_method(text: str) -> str:
 
 def _extract_document_type(text: str) -> str:
     text_lower = text.lower()
-    if any(w in text_lower for w in ("dobropis", "opravný daňový doklad", "credit note")):
+    if any(w in text_lower for w in ("vrubopis", "debit note", "debit memo")):
+        return "vrubopis"
+    if any(w in text_lower for w in ("dobropis", "opravný daňový doklad", "credit note", "credit memo")):
         return "dobropis"
     if any(w in text_lower for w in ("paragon", "účtenka", "pokladní doklad")):
         return "uctenka"
+    if any(w in text_lower for w in ("zálohová faktura", "zálohový daňový doklad",
+                                      "proforma", "pro forma", "záloha č", "záloha na")):
+        return "zaloha"
     return "faktura"
 
 

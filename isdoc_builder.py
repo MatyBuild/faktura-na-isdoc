@@ -11,11 +11,13 @@ from pdf_extractor import ExtractionResult
 
 _NS = "http://isdoc.cz/namespace/2013"
 
-# DocumentType code mapping
+# DocumentType code mapping  (ISDOC 6.0.2 spec)
 _DOCTYPE_CODE = {
     "faktura":  "1",
-    "dobropis": "3",
-    "uctenka":  "5",
+    "zaloha":   "2",   # Zálohový daňový doklad
+    "dobropis": "3",   # Opravný daňový doklad (snížení)
+    "vrubopis": "3",   # Opravný daňový doklad (zvýšení) – stejný kód, jiné znaménko
+    "uctenka":  "5",   # Zjednodušený daňový doklad
     "unknown":  "1",
 }
 
@@ -35,6 +37,11 @@ def _el(parent: ET.Element, tag: str, text: Optional[str] = None,
     if text is not None:
         el.text = str(text)
     return el
+
+
+def _fmt_rate(rate: float) -> str:
+    """Format VAT rate as integer string when possible (21.0 → '21')."""
+    return str(int(rate)) if rate == int(rate) else str(rate)
 
 
 def build_isdoc(r: ExtractionResult) -> str:
@@ -57,7 +64,7 @@ def build_isdoc(r: ExtractionResult) -> str:
         _el(root, "CurrencyCode", r.currency)
 
     # ── Supplier party ────────────────────────────────────────────────────
-    asp  = _el(root, "AccountingSupplierParty")
+    asp   = _el(root, "AccountingSupplierParty")
     party = _el(asp, "Party")
 
     if r.registration_no:
@@ -84,25 +91,59 @@ def build_isdoc(r: ExtractionResult) -> str:
     _el(ctr, "IdentificationCode", r.supplier_country or "CZ")
 
     # ── Payment means ─────────────────────────────────────────────────────
-    pm   = _el(root, "PaymentMeans")
-    pay  = _el(pm, "Payment")
+    pm  = _el(root, "PaymentMeans")
+    pay = _el(pm, "Payment")
     _el(pay, "PaymentMeansCode", _PM_CODE.get(r.payment_method, "42"))
     if r.variable_symbol:
         _el(pay, "VariableSymbol", r.variable_symbol)
 
-    # ── Tax total ─────────────────────────────────────────────────────────
-    cur = r.currency or "CZK"
-    base   = r.amount_without_vat or 0.0
-    vat_a  = r.amount_vat or 0.0
-    total  = r.amount_total or (base + vat_a)
+    # ── Tax total (one TaxSubTotal per unique VAT rate) ────────────────────
+    cur         = r.currency or "CZK"
+    is_dobropis = r.document_type == "dobropis"
 
-    tt  = _el(root, "TaxTotal")
-    tst = _el(tt, "TaxSubTotal")
-    _el(tst, "TaxableAmount", f"{base:.2f}", currencyID=cur)
-    _el(tst, "TaxAmount",     f"{vat_a:.2f}", currencyID=cur)
-    tc  = _el(tst, "TaxCategory")
-    _el(tc, "Percent",   str(r.vat_rate))
-    _el(tc, "TaxScheme", "VAT")
+    if r.lines:
+        # Group by VAT rate to produce correct multi-rate TaxTotal
+        vat_groups: dict[float, list] = {}
+        for li in r.lines:
+            vat_groups.setdefault(li.vat_rate, []).append(li)
+
+        tt              = _el(root, "TaxTotal")
+        calc_base_total = 0.0
+        calc_vat_total  = 0.0
+
+        for rate in sorted(vat_groups):
+            group_lines = vat_groups[rate]
+            group_base  = sum(round(li.unit_price * li.quantity, 2) for li in group_lines)
+            if is_dobropis and group_base > 0:
+                group_base = -group_base
+            group_vat = round(group_base * rate / 100, 2)
+            calc_base_total += group_base
+            calc_vat_total  += group_vat
+
+            tst = _el(tt, "TaxSubTotal")
+            _el(tst, "TaxableAmount", f"{group_base:.2f}", currencyID=cur)
+            _el(tst, "TaxAmount",     f"{group_vat:.2f}",  currencyID=cur)
+            tc  = _el(tst, "TaxCategory")
+            _el(tc, "Percent",   _fmt_rate(rate))
+            _el(tc, "TaxScheme", "VAT")
+
+        base  = round(calc_base_total, 2)
+        vat_a = round(calc_vat_total,  2)
+        total = r.amount_total or round(base + vat_a, 2)
+
+    else:
+        # Fallback: header totals, single rate
+        base  = r.amount_without_vat or 0.0
+        vat_a = r.amount_vat or 0.0
+        total = r.amount_total or (base + vat_a)
+
+        tt  = _el(root, "TaxTotal")
+        tst = _el(tt, "TaxSubTotal")
+        _el(tst, "TaxableAmount", f"{base:.2f}", currencyID=cur)
+        _el(tst, "TaxAmount",     f"{vat_a:.2f}", currencyID=cur)
+        tc  = _el(tst, "TaxCategory")
+        _el(tc, "Percent",   _fmt_rate(r.vat_rate))
+        _el(tc, "TaxScheme", "VAT")
 
     # ── Legal monetary total ──────────────────────────────────────────────
     lmt = _el(root, "LegalMonetaryTotal")
@@ -111,14 +152,12 @@ def build_isdoc(r: ExtractionResult) -> str:
     _el(lmt, "PayableAmount",      f"{total:.2f}", currencyID=cur)
 
     # ── Invoice lines ─────────────────────────────────────────────────────
-    line_items = r.lines if r.lines else None
-
-    if line_items:
-        for idx, li in enumerate(line_items, start=1):
+    if r.lines:
+        for idx, li in enumerate(r.lines, start=1):
             up = li.unit_price
-            if r.document_type == "dobropis" and up > 0:
+            if is_dobropis and up > 0:
                 up = -up
-            ext = round(up * li.quantity, 2)
+            ext  = round(up * li.quantity, 2)
             line = _el(root, "InvoiceLine")
             _el(line, "ID", str(idx))
             unit_code = "ZZ" if not li.unit_name else li.unit_name[:3].upper()
@@ -129,12 +168,12 @@ def build_isdoc(r: ExtractionResult) -> str:
             price_el = _el(line, "Price")
             _el(price_el, "PriceAmount", f"{up:.2f}", currencyID=cur)
             ctc = _el(line, "ClassifiedTaxCategory")
-            _el(ctc, "Percent", str(li.vat_rate))
+            _el(ctc, "Percent",   _fmt_rate(li.vat_rate))
             _el(ctc, "TaxScheme", "VAT")
     else:
-        # Fallback: single aggregate line from header totals
+        # Fallback: single aggregate line
         unit_price = base
-        if r.document_type == "dobropis" and unit_price > 0:
+        if is_dobropis and unit_price > 0:
             unit_price = -unit_price
         line = _el(root, "InvoiceLine")
         _el(line, "ID", "1")
@@ -145,7 +184,7 @@ def build_isdoc(r: ExtractionResult) -> str:
         price_el = _el(line, "Price")
         _el(price_el, "PriceAmount", f"{unit_price:.2f}", currencyID=cur)
         ctc = _el(line, "ClassifiedTaxCategory")
-        _el(ctc, "Percent", str(r.vat_rate))
+        _el(ctc, "Percent",   _fmt_rate(r.vat_rate))
         _el(ctc, "TaxScheme", "VAT")
 
     ET.indent(root, space="  ")

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Testy (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Nastavit Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Nainstalovat závislosti (bez OCR)
+        run: |
+          pip install --upgrade pip
+          pip install pydantic anthropic python-dotenv pymupdf pytest pytest-cov
+
+      - name: Spustit testy
+        env:
+          ANTHROPIC_API_KEY: sk-ant-test-dummy
+        run: |
+          pytest tests/ -v --tb=short \
+            --cov=. \
+            --cov-omit="tests/*,conftest.py" \
+            --cov-report=term-missing
+
+      - name: Zkontrolovat pokrytí (min. 80 %)
+        env:
+          ANTHROPIC_API_KEY: sk-ant-test-dummy
+        run: |
+          pytest tests/ --cov=. --cov-omit="tests/*,conftest.py" \
+            --cov-fail-under=80 -q
